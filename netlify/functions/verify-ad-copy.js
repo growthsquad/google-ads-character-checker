@@ -3,7 +3,7 @@ exports.handler = async (event, context) => {
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS"
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
   };
 
   // Handle preflight OPTIONS request
@@ -11,26 +11,117 @@ exports.handler = async (event, context) => {
     return { statusCode: 200, headers, body: "" };
   }
 
-  // Only accept POST requests
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers,
-      body: JSON.stringify({ error: "Method not allowed. Use POST." })
-    };
-  }
-
   try {
-    // Parse the request body
-    const { platform, items } = JSON.parse(event.body || "{}");
-    
+    let platform, items;
+
+    // Handle both GET and POST requests
+    if (event.httpMethod === "GET") {
+      // Parse query parameters for GET request
+      const params = event.queryStringParameters || {};
+      
+      // Support simple single-item verification via GET
+      if (params.text && params.type) {
+        platform = params.platform || "google_ads";
+        items = [{
+          text: params.text,
+          type: params.type
+        }];
+      }
+      // Support multiple items via JSON in query parameter
+      else if (params.data) {
+        try {
+          const data = JSON.parse(decodeURIComponent(params.data));
+          platform = data.platform;
+          items = data.items;
+        } catch (e) {
+          return {
+            statusCode: 400,
+            headers,
+            body: JSON.stringify({ 
+              error: "Invalid JSON in data parameter",
+              usage: {
+                simple: "?text=Your+Headline&type=headline&platform=google_ads",
+                complex: "?data=" + encodeURIComponent(JSON.stringify({
+                  platform: "google_ads",
+                  items: [
+                    {text: "Your Headline", type: "headline"}
+                  ]
+                }))
+              }
+            })
+          };
+        }
+      }
+      // Return usage instructions if no valid parameters
+      else {
+        return {
+          statusCode: 200,
+          headers,
+          body: JSON.stringify({
+            message: "Character Verification API",
+            version: "2.0",
+            methods: ["GET", "POST"],
+            usage: {
+              get_simple: {
+                url: "?text=Your+Headline+Here&type=headline&platform=google_ads",
+                description: "Verify a single piece of ad copy"
+              },
+              get_complex: {
+                url: "?data=" + encodeURIComponent(JSON.stringify({
+                  platform: "google_ads",
+                  items: [
+                    {text: "Headline 1", type: "headline"},
+                    {text: "Description text", type: "description"}
+                  ]
+                })),
+                description: "Verify multiple items (URL encode the JSON)"
+              },
+              post: {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: {
+                  platform: "google_ads",
+                  items: [
+                    {text: "Your ad copy", type: "headline"}
+                  ]
+                }
+              }
+            },
+            platforms: ["google_ads", "facebook_ads", "linkedin_ads"],
+            limits: {
+              google_ads: {
+                headline: 30,
+                description: 90,
+                callout: 25,
+                path: 15
+              }
+            }
+          })
+        };
+      }
+    } 
+    else if (event.httpMethod === "POST") {
+      // Handle POST request (existing functionality)
+      const body = JSON.parse(event.body || "{}");
+      platform = body.platform;
+      items = body.items;
+    }
+    else {
+      return {
+        statusCode: 405,
+        headers,
+        body: JSON.stringify({ error: "Method not allowed. Use GET or POST." })
+      };
+    }
+
     // Validate input
     if (!platform || !items || !Array.isArray(items)) {
       return {
         statusCode: 400,
         headers,
         body: JSON.stringify({ 
-          error: "Invalid request. Expected: {platform: string, items: array}" 
+          error: "Invalid request. Expected: platform and items array",
+          received: { platform, items: Array.isArray(items) ? `array[${items.length}]` : typeof items }
         })
       };
     }
@@ -64,7 +155,8 @@ exports.handler = async (event, context) => {
         statusCode: 400,
         headers,
         body: JSON.stringify({ 
-          error: `Unsupported platform: ${platform}. Supported: ${Object.keys(limits).join(', ')}` 
+          error: `Unsupported platform: ${platform}`,
+          supported: Object.keys(limits)
         })
       };
     }
@@ -124,6 +216,7 @@ exports.handler = async (event, context) => {
     // Prepare response
     const response = {
       platform,
+      method: event.httpMethod,
       timestamp: new Date().toISOString(),
       summary: {
         total_items: results.length,
